@@ -1,9 +1,3 @@
-"""
-Simple client for the OpenFDA Drug Adverse Events API.
-Docs: https://open.fda.gov/apis/drug/event/
-No API key required for basic usage (limit: 1 000 req/day, 40 req/min).
-"""
-
 import requests
 
 BASE_URL = "https://api.fda.gov/drug/event.json"

@@ -1,9 +1,3 @@
-"""
-FHIR client — Patient + Condition resources
-Public HAPI FHIR R4 test server (no auth required).
-Docs: https://hapi.fhir.org
-"""
-
 import requests
 import xml.dom.minidom
 
