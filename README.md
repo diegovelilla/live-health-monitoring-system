@@ -4,7 +4,5 @@ Instructions:
 3. Run script: ```docker compose exec pipeline-base python src/landing_zone/clients/weather_client.py```
 
 Access MinIO web UI:
-    1. Access to http://localhost:9001
-    2. Enter user and pwd (should be in .env):  
-        minio_admin
-        minio123456
+1. Access to http://localhost:9001
+2. Enter user and pwd (should be in .env): minio_admin, minio123456
