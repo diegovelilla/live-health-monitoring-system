@@ -1,9 +1,11 @@
+import os
 import requests
 from typing import Any
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8000
 
+API_BASE_URL = os.getenv("WEARABLE_API_URL", "http://localhost:8000")
 
 def get_reading(
         device_id: str,
@@ -32,7 +34,7 @@ def get_reading(
     Raises:
         requests.HTTPError: If the device is not found (404) or the API returns an error.
     """
-    url = f"http://{host}:{port}/reading/{device_id}"
+    url = f"{API_BASE_URL}/reading/{device_id}"
     response = requests.get(url, timeout=10)
     response.raise_for_status()
     return response.json()
@@ -52,7 +54,15 @@ def list_devices(
     Returns:
         list[str]: List of device ID strings.
     """
-    url = f"http://{host}:{port}/devices"
+    url = f"{API_BASE_URL}/devices"
     response = requests.get(url, timeout=10)
     response.raise_for_status()
     return response.json()["devices"]
+
+
+if __name__ == '__main__':
+    devs = list_devices()
+    print(devs)
+
+    res = get_reading(devs[0])
+    print(res)

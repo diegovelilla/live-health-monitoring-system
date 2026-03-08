@@ -1,3 +1,59 @@
 services:
+  # Infrastructure services
+  minio:
+    image: minio/minio
+    container_name: bdm_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio123456
+    volumes:
+      - ./data/minio:/data
+    command: server /data --console-address ":9001"
   
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: bdm_kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,ANYWHERE:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,ANYWHERE://localhost:9092'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,ANYWHERE://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
   
+  # Wereable API: Simulates an external service by producing synthetic data
+  wearable-api: 
+    build:
+      context: ./src/landing_zone/external_wearable_api
+      dockerfile: Dockerfile.wearable_api
+    container_name: wearable_source_api
+    ports:
+      - "8000:8000"
+    restart: always
+  
+  # Core execution environment
+  pipeline-base:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: bdm_pipeline_runtime
+    depends_on:
+      - minio
+      - kafka
+      - wearable-api
+    volumes:
+      - ./src:/app/src
+    environment:
+      - S3_ENDPOINT=http://minio:9000
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - WEARABLE_API_URL=http://wearable-api:8000
+    command: tail -f /dev/null
+    
