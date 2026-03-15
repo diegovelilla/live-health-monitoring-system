@@ -2,16 +2,9 @@ import os
 import requests
 from typing import Any
 
-DEFAULT_HOST = "localhost"
-DEFAULT_PORT = 8000
+API_BASE_URL = os.getenv("WEARABLE_API_URL")
 
-API_BASE_URL = os.getenv("WEARABLE_API_URL", "http://localhost:8000")
-
-def get_reading(
-        device_id: str,
-        host: str = DEFAULT_HOST,
-        port: int = DEFAULT_PORT,
-) -> dict[str, Any]:
+def get_reading(device_id: str) -> dict[str, Any]:
     """
     Fetch a single live health reading from the wearable API.
 
@@ -40,10 +33,7 @@ def get_reading(
     return response.json()
 
 
-def list_devices(
-        host: str = DEFAULT_HOST,
-        port: int = DEFAULT_PORT,
-) -> list[str]:
+def list_devices() -> list[str]:
     """
     Return the list of device IDs available on the wearable API.
 

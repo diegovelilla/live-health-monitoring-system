@@ -44,6 +44,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.pipeline
+    env_file:
+      - .env
     container_name: bdm_pipeline_runtime
     depends_on:
       - minio

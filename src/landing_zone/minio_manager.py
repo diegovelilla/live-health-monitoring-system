@@ -13,19 +13,18 @@ logging.basicConfig(
 logger = logging.getLogger("LandingZoneManager")
 
 
-class LandingZoneManager:
+class MinIOManager:
     def __init__(self):
-        # Environment variables from docker-compose.yaml
-        self.endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000")
-        self.access_key = os.getenv("MINIO_ROOT_USER", "minio_admin")
-        self.secret_key = os.getenv("MINIO_ROOT_PASSWORD", "minio123456")
+        self.endpoint = os.getenv("MINIO_ENDPOINT")
+        self.user = os.getenv("MINIO_USER")
+        self.pwd = os.getenv("MINIO_PWD")
         
-        # Initialize MinIO client via boto3
+        # Initialize MinIO client with boto3
         self.s3_client = boto3.client(
             "s3",
             endpoint_url=self.endpoint,
-            aws_access_key_id=self.access_key,
-            aws_secret_access_key=self.secret_key
+            aws_access_key_id=self.user,
+            aws_secret_access_key=self.pwd
         )
 
     def ensure_bucket(self, bucket_name: str):
@@ -41,12 +40,12 @@ class LandingZoneManager:
                 logger.error(f"Error checking bucket {bucket_name}: {e}")
                 raise
 
-    def save_raw_object(self, bucket: str, key: str, data: bytes):
+    def save_object(self, bucket: str, key: str, data: bytes):
         """Stores unstructured data (X-Rays/MRIs/XML) in native format"""
         try:
             self.ensure_bucket(bucket)
             self.s3_client.put_object(Bucket=bucket, Key=key, Body=data)
-            logger.info(f"Successfully stored raw object: {bucket}/{key}")
+            logger.info(f"Successfully stored object: {bucket}/{key}")
         except Exception as e:
             logger.error(f"Failed to store raw object {key} in {bucket}: {e}")
 
@@ -64,8 +63,8 @@ class LandingZoneManager:
             # Delta Lake options for MinIO
             storage_options = {
                 "endpoint_url": self.endpoint,
-                "access_key_id": self.access_key,
-                "secret_access_key": self.secret_key,
+                "access_key_id": self.user,
+                "secret_access_key": self.pwd,
                 "region": "us-east-1",
                 "allow_http": "true"
             }

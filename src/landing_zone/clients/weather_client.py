@@ -1,7 +1,8 @@
+import os
 import openmeteo_requests
 from typing import Any
 
-URL = "https://api.open-meteo.com/v1/forecast"
+URL = os.getenv("WEATHER_API_URL")
 METRICS = [
     "temperature_2m", 
     "apparent_temperature", 
@@ -46,3 +47,10 @@ def get_weather(
         name: value for name, value in zip(params, responses)
     }
     return res
+
+if __name__ == '__main__':
+    res = get_weather(
+        latitude=41.3888,
+        longitude=2.1590,
+    )
+    print(res)

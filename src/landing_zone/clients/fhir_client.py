@@ -1,7 +1,9 @@
+import os
 import requests
 import xml.dom.minidom
 
-BASE_URL = "https://hapi.fhir.org/baseR4"
+
+BASE_URL = os.getenv("FHIR_API_URL")
 HEADERS  = {"Accept": "application/fhir+xml"}
 
 
