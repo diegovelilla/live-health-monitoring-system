@@ -7,8 +7,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio123456
     volumes:
       - ./data/minio:/data
     command: server /data --console-address ":9001"
@@ -27,26 +27,61 @@ services:
       KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,ANYWHERE://0.0.0.0:9092'
       KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
   
-  # Wereable API: Simulates an external service by producing synthetic data
   wearable-api: 
     build:
-      context: ./src/landing_zone/external_wearable_api
-      dockerfile: Dockerfile.wearable_api
-    container_name: wearable_source_api
-    ports:
-      - "8000:8000"
+      context: .
+      dockerfile: docker/wearable_api/Dockerfile
+    container_name: wearable_source_producer
     restart: always
-  
-  # Core execution environment
-  pipeline-base:
+    depends_on:
+      - kafka
+    volumes:
+      - ./src:/app/src
+    environment:
+      - PYTHONPATH=/app
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - WEARABLE_TOPIC=wearable.readings
+      - WEARABLE_PUBLISH_INTERVAL_SEC=1
+      - KAFKA_CLIENT_ID=wearable-producer
+      - PYTHONUNBUFFERED=1
+    command: python -m src.landing_zone.producers.wearable_producer
+
+  weather-proxy:
     build:
       context: .
-      dockerfile: Dockerfile.pipeline
+      dockerfile: docker/pipeline/Dockerfile
     env_file:
       - .env
-    container_name: bdm_pipeline_runtime
+    container_name: weather_source_proxy
+    restart: always
+    depends_on:
+      - kafka
+    volumes:
+      - ./src:/app/src
+    environment:
+      - PYTHONPATH=/app
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - WEATHER_TOPIC=weather.readings
+      - WEATHER_PUBLISH_INTERVAL_SEC=60
+      - KAFKA_CLIENT_ID=weather-producer
+      - PYTHONUNBUFFERED=1
+    command: python -m src.landing_zone.producers.weather_producer
+
+  wearable-aggregator:
+    build:
+      context: .
+      dockerfile: docker/pipeline/Dockerfile
+    env_file:
+      - .env
+    container_name: wearable_aggregator_runtime
+    restart: always
     depends_on:
       - minio
       - kafka
@@ -54,8 +89,41 @@ services:
     volumes:
       - ./src:/app/src
     environment:
-      - S3_ENDPOINT=http://minio:9000
+      - PYTHONPATH=/app
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-      - WEARABLE_API_URL=http://wearable-api:8000
-    command: tail -f /dev/null
-    
+      - WEARABLE_TOPIC=wearable.readings
+      - WEARABLE_AGG_GROUP=wearable-aggregator-1m
+      - WEARABLE_OFFSET_RESET=latest
+      - WARM_INTERVAL_SEC=2
+      - WARM_WINDOW_MINUTES=2
+      - PYTHONUNBUFFERED=1
+    command: python -m src.landing_zone.run_wearable_aggregator
+
+  airflow:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: bdm_airflow
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      - minio
+      - kafka
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
+    environment:
+      - PYTHONPATH=/opt/airflow
+      - AIRFLOW_HOME=/opt/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=airflow:ADMIN
+      - AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE=/opt/airflow/simple_auth_manager_passwords.json
+      - AIRFLOW_SIMPLE_AUTH_USERNAME=airflow
+      - AIRFLOW_SIMPLE_AUTH_PASSWORD=airflow
+      - PYTHONUNBUFFERED=1
+    # We need to change the user and password to the ones above to be able to login to the Airflow UI.
+    command: >
+      bash -lc 'printf "{\"%s\":\"%s\"}\n" "$$AIRFLOW_SIMPLE_AUTH_USERNAME" "$$AIRFLOW_SIMPLE_AUTH_PASSWORD" > "$$AIRFLOW_HOME/simple_auth_manager_passwords.json" && airflow standalone'

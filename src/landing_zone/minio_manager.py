@@ -6,11 +6,15 @@ from botocore.exceptions import ClientError
 from deltalake.writer import write_deltalake
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("LandingZoneManager")
+logger = logging.getLogger(__name__)
+
+
+"""
+This module implements the MinIOManager class, which provides methods to interact with MinIO 
+for both raw object storage and structured Delta Lake storage. It abstracts away the details 
+of bucket management and data writing, allowing other parts of the landing zone to easily 
+store data in MinIO in the appropriate format.
+"""
 
 
 class MinIOManager:
@@ -27,8 +31,16 @@ class MinIOManager:
             aws_secret_access_key=self.pwd
         )
 
-    def ensure_bucket(self, bucket_name: str):
-        """Creates the bucket if it does not exist"""
+    def create_bucket(self, bucket_name: str):
+        """
+        Creates the bucket if it does not exist.
+
+        Args:
+            bucket_name (str): The name of the bucket to create.
+        
+        Raises:
+            Exception: If there is an error other than bucket not existing.
+        """
         try:
             self.s3_client.head_bucket(Bucket=bucket_name)
         except ClientError as e:
@@ -41,22 +53,36 @@ class MinIOManager:
                 raise
 
     def save_object(self, bucket: str, key: str, data: bytes):
-        """Stores unstructured data (X-Rays/MRIs/XML) in native format"""
+        """
+        Stores unstructured data (X-Rays/MRIs/XML) in native format.
+
+        Args:
+            bucket (str): The name of the bucket to store the object in.
+            key (str): The key under which to store the object.
+            data (bytes): The data to store.
+        """
         try:
-            self.ensure_bucket(bucket)
+            self.create_bucket(bucket)
             self.s3_client.put_object(Bucket=bucket, Key=key, Body=data)
             logger.info(f"Successfully stored object: {bucket}/{key}")
         except Exception as e:
             logger.error(f"Failed to store raw object {key} in {bucket}: {e}")
 
     def save_as_delta(self, bucket: str, table_name: str, data: list):
-        """Stores structured data using Delta Lakehouse paradigm"""
+        """
+        Stores structured data using Delta Lake.
+
+        Args:
+            bucket (str): The name of the bucket to store the table in.
+            table_name (str): The name of the Delta table to create/update.
+            data (list): The structured data to store.
+        """
         if not data:
             logger.warning(f"No data provided for Delta table: {table_name}")
             return
 
         try:
-            self.ensure_bucket(bucket)
+            self.create_bucket(bucket)
             df = pd.DataFrame(data)
             path = f"s3://{bucket}/{table_name}"
             
@@ -66,7 +92,8 @@ class MinIOManager:
                 "access_key_id": self.user,
                 "secret_access_key": self.pwd,
                 "region": "us-east-1",
-                "allow_http": "true"
+                "allow_http": "true",
+                "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
             }
 
             # Write data as Parquet with metadata

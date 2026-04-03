@@ -1,56 +1,80 @@
-import os
-import openmeteo_requests
+import json
+import logging
 from typing import Any
 
-URL = os.getenv("WEATHER_API_URL")
-METRICS = [
-    "temperature_2m", 
-    "apparent_temperature", 
-    "wind_speed_10m", 
-    "relative_humidity_2m", 
-    "surface_pressure",
-    "precipitation_probability",
-    "precipitation",
-    "visibility"
-]
+from kafka import KafkaConsumer
+from src.utils import require_env
 
-def get_weather(
-        latitude: float, 
-        longitude: float, 
-        metrics: list[str] = METRICS
-    ) -> dict[str, Any]:
-    """
-    Get weather metrics for any given location.
-    
-    Args:
-        latitude (float): Latitude of the location.
-        longitude (float): Longitude of the location.
-        metrics (list[str], optional): List of weather metrics to retrieve. Defaults to METRICS.
+
+logger = logging.getLogger(__name__)
+
+
+"""
+This module implements a Kafka consumer that subscribes to a topic where wearable device readings are published.
+The consumer continuously polls for new messages, extracts the payload containing the wearable readings, 
+and returns them as a list of dictionaries for further processing by downstream applications.
+
+For the first part of this project P1 we are not implementing any task that consumes data so this is here 
+just for demonstration purposes and to keep the architecture consistent. In a real scenario, this consumer 
+would be used to build an extreme weather alerting system for our users.
+"""
+
+
+class WeatherStreamConsumer:
+    """Kafka consumer wrapper for weather readings."""
+
+    def __init__(
+        self,
+        bootstrap_servers: str | None = None,
+        topic: str | None = None,
+        group_id: str | None = None,
+        auto_offset_reset: str | None = None,
+    ):
+        bootstrap_servers = bootstrap_servers or require_env("KAFKA_BOOTSTRAP_SERVERS")
+        topic = topic or require_env("WEATHER_TOPIC")
+        group_id = group_id or require_env("WEATHER_GROUP_ID")
+        auto_offset_reset = auto_offset_reset or require_env("WEATHER_OFFSET_RESET")
+
+        self.topic = topic
+        self.consumer = KafkaConsumer(
+            topic,
+            bootstrap_servers=bootstrap_servers,
+            group_id=group_id,
+            auto_offset_reset=auto_offset_reset,
+            value_deserializer=lambda value: json.loads(value.decode("utf-8")),
+            enable_auto_commit=True,
+            consumer_timeout_ms=1000,
+        )
+        logger.info(
+            f"Initialized weather consumer for topic={topic}, group_id={group_id}, offset_reset={auto_offset_reset}"
+        )
+
+    def poll_readings(self, timeout_ms: int = 1000, max_records: int = 100) -> list[dict[str, Any]]:
+        """
+        Poll Kafka and return extracted weather payloads.
         
-    Returns:
-        res (dict[str, Any]): A dictionary containing the requested weather metrics and their values.
-    """
-    openmeteo = openmeteo_requests.Client()
-    url = "https://api.open-meteo.com/v1/forecast"
-    params = {
-        "latitude": latitude,
-        "longitude": longitude,
-        "current": metrics,
-        "temperature_unit": "celsius",
-        "windspeed_unit": "kmh",
-        "precipitation_unit": "mm",
-    }
+        Args:
+            timeout_ms (int): The maximum time to block while polling for messages.
+            max_records (int): The maximum number of records to return in a single poll.
+        
+        Returns:
+            list[dict[str, Any]]: A list of weather reading payloads extracted from Kafka messages.
+        """
+        batch = self.consumer.poll(timeout_ms=timeout_ms, max_records=max_records)
+        readings: list[dict[str, Any]] = []
 
-    responses = openmeteo.weather_api(url, params=params)[0].Current()
-    responses = [responses.Variables(i).Value() for i in range(responses.VariablesLength())]
-    res = {
-        name: value for name, value in zip(params, responses)
-    }
-    return res
+        for records in batch.values():
+            for record in records:
+                event = record.value
+                if not isinstance(event, dict):
+                    continue
 
-if __name__ == '__main__':
-    res = get_weather(
-        latitude=41.3888,
-        longitude=2.1590,
-    )
-    print(res)
+                payload = event.get("payload")
+                if isinstance(payload, dict):
+                    readings.append(payload)
+
+        logger.info(f"Polled weather readings: {len(readings)}")
+        return readings
+
+    def close(self) -> None:
+        self.consumer.close()
