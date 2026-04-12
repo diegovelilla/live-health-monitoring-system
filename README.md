@@ -22,7 +22,7 @@
 
 ## Execution
 
-The warm path aggregations will have automatically so check MinIO. 
+The warm path aggregations will happen automatically so check MinIO. 
 
 In order to run the cold paths, go the Airflow UI, and under `Dags`, you will find `cold_ingestion`. Go inside and trigger it. After some time (TCIA ingestion can take up to 5 min) you will see two new folders pop up in MinIO with the new data. Since both hot paths are not being stored, the only way to check they work is by reading the logs of the producer processes. You can do so by running:
 
