@@ -34,6 +34,32 @@ services:
       KAFKA_MIN_INSYNC_REPLICAS: 1
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
   
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: bdm_clickhouse
+    ports:
+      - "8123:8123" # HTTP interface
+      - "9000:9000" # native client interface
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./data/clickhouse/logs:/var/log/clickhouse-server
+    restart: always
+  
+  mongodb:
+    image: mongo:7.0
+    container_name: bdm_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PWD}
+    volumes:
+      - ./data/mongodb:/data/db
+    restart: always
+  
   wearable-api: 
     build:
       context: .
@@ -110,6 +136,8 @@ services:
     depends_on:
       - minio
       - kafka
+      - clickhouse
+      - mongodb
     ports:
       - "8080:8080"
     volumes:
