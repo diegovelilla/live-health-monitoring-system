@@ -39,7 +39,7 @@ services:
     container_name: bdm_clickhouse
     ports:
       - "8123:8123" # HTTP interface
-      - "9000:9000" # native client interface
+      - "9004:9000" # native client interface
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
@@ -59,6 +59,22 @@ services:
     volumes:
       - ./data/mongodb:/data/db
     restart: always
+  
+  # to visualize JSON docs in a web interface
+  mongo-express:
+    image: mongo-express:latest
+    container_name: bdm_mongo_express
+    restart: always
+    ports:
+      - "8081:8081"
+    environment:
+      # Credentials to log into the Mongo Express web UI itself (optional, defaults to admin/pass)
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_USER}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_PWD}
+      # Connection string pointing to your mongodb service above
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER}:${MONGO_PWD}@mongodb:27017/?authSource=admin
+    depends_on:
+      - mongodb
   
   wearable-api: 
     build:

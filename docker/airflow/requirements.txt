@@ -7,3 +7,5 @@ s3fs==2024.2.0
 kafka-python-ng==2.2.2
 python-dotenv==1.0.1
 tcia_utils
+clickhouse-connect==0.7.0
+pymongo==4.6.1
