@@ -12,6 +12,11 @@ services:
     volumes:
       - ./data/minio:/data
     command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
   
   kafka:
     image: confluentinc/cp-kafka:7.6.0
@@ -75,6 +80,65 @@ services:
       ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER}:${MONGO_PWD}@mongodb:27017/?authSource=admin
     depends_on:
       - mongodb
+  
+  # metadata for Milvus
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: bdm_etcd
+    environment:
+      - ETCDCTL_API=3 # Forces the internal healthcheck tool to use v3 commands
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ./data/etcd:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    restart: always
+
+  milvus:
+    image: milvusdb/milvus:v2.4.3
+    container_name: bdm_milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000          
+      - MINIO_ACCESS_KEY_ID=minio_admin   
+      - MINIO_SECRET_ACCESS_KEY=minio123456
+    volumes:
+      - ./data/milvus:/var/lib/milvus     
+    ports:
+      - "19530:19530"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "19530"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+  
+  # web interface for Milvus
+  attu:
+    image: zilliz/attu:v2.4.8
+    container_name: bdm_attu
+    ports:
+      - "8000:3000"
+    environment:
+      - MILVUS_URL=milvus:19530
+    depends_on:
+      - milvus
+    restart: always
   
   wearable-api: 
     build:
@@ -154,6 +218,7 @@ services:
       - kafka
       - clickhouse
       - mongodb
+      - milvus
     ports:
       - "8080:8080"
     volumes:

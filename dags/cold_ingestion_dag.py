@@ -10,6 +10,10 @@ from src.trusted_zone.process_structured import run_structured_trusted_pipeline
 from src.trusted_zone.process_semistructured import run_semistructured_trusted_pipeline
 from src.trusted_zone.process_unstructured import run_unstructured_trusted_pipeline
 
+from src.exploitation_zone.process_structured import run_structured_exploitation_pipeline
+from src.exploitation_zone.flatten_semistructured import run_semistructured_exploitation_pipeline
+from src.exploitation_zone.process_unstructured import run_unstructured_exploitation_pipeline
+
 from src.utils import require_env
 
 
@@ -74,25 +78,46 @@ def cold_ingestion():
     def trusted_unstructured_task(upstream_tcia_status: dict[str, int]) -> None:
         """Validates and processes raw DICOM images into Trusted MinIO bucket"""
         run_unstructured_trusted_pipeline() 
+
+    
+    ############################################
+    ####  STAGE 3: EXPLOITATION ZONE TASKS  ####
+    ############################################
+
+    @task()
+    def exploitation_structured_task() -> None:
+        """Computes statistical profiles over historical wearable aggregations in ClickHouse"""
+        run_structured_exploitation_pipeline()
+
+    @task()
+    def exploitation_flatten_task() -> None:
+        """Flattens clinical patient documents from MongoDB into ClickHouse data marts"""
+        run_semistructured_exploitation_pipeline()
+
+    @task()
+    def exploitation_unstructured_task() -> None:
+        """Generates image embeddings (Milvus) and moves images to Exploitation MinIO bucket"""
+        run_unstructured_exploitation_pipeline()
     
 
     ############################################
     #######  PIPELINE DEPENDENCY GRAPH  ########
     ############################################
 
-    # 1. Execute Landing ingestions sequentially
+    # Stage 1 (Landing Zone ingestions)
     fhir_status = ingest_fhir_task()
     tcia_status = ingest_tcia_task(fhir_status)
 
-    # 2. Trigger Trusted Zone tasks based on Landing tasks completion
+    # Stage 2 (Trusted Zone transformations)
     semi_structured_processed = trusted_semistructured_task(fhir_status)
     unstructured_processed = trusted_unstructured_task(tcia_status)
-    
-    # 3. Tabular processing runs in parallel
     structured_processed = trusted_structured_task()
-    
-    # Enforce that structured processing waits for base ingestions to finish as well
     tcia_status >> structured_processed
+
+    # Stage 3 (Exploitation Zone transformations)
+    structured_processed >> exploitation_structured_task()
+    semi_structured_processed >> exploitation_flatten_task()
+    unstructured_processed >> exploitation_unstructured_task()
 
 
 cold_ingestion()

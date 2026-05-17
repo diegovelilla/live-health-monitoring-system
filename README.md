@@ -25,6 +25,7 @@
 4. **MongoDB web interface**: `http://localhost:8081`
     - User: `mongo_admin`
     - Password: `mongo123456`
+5. **Milvus (Vector DB)**: `http://localhost:8000`
 
 ## Execution
 
