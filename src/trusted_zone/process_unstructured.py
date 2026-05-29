@@ -1,34 +1,72 @@
 import logging
 import io
 import boto3
+import pydicom
+import numpy as np
+from PIL import Image
+from pydicom.errors import InvalidDicomError
 from src.utils import require_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
 
-def validate_dicom_integrity(img_bytes: bytes) -> bool:
+def process_and_validate_dicom(raw_bytes: bytes) -> tuple[bool, bytes, str]:
     """
-    Verifies integrity of binary file, checking for corruption and 
-    confirming the presence of the standard DICOM preamble layout.
+    Data quality and standardization processing for DICOM medical images.
+    Returns: (is_valid, processed_png_bytes, status_message)
     """
-    if len(img_bytes) < 132:
-        logger.warning("File byte block size is below the minimal DICOM length parameters.")
-        return False
-    
-    # Standard DICOM files contain a 128-byte preamble, followed by the "DICM" bytes signature
-    sign_bytes = img_bytes[128:132]
-    if sign_bytes != b"DICM":
-        logger.warning(f"File signature identification validation failed. Extracted characters: {sign_bytes}")
-        return False
+    try:
+        # 1: Structural integrity check
+        dicom_file = pydicom.dcmread(io.BytesIO(raw_bytes))
+                
+        # 2: Data governance & anonymization
+        if 'PatientName' in dicom_file:
+            dicom_file.PatientName = "ANONYMIZED"
+        if 'PatientBirthDate' in dicom_file:
+            dicom_file.PatientBirthDate = "19000101"
+            
+        # 4: Pixel data corruption verification
+        if not hasattr(dicom_file, 'pixel_array'):
+            return False, b"", "Missing pixel array block"
+            
+        pixels = dicom_file.pixel_array.astype(np.float32)
         
-    return True
-
-def convert_dicom_to_png_placeholder(img_bytes: bytes) -> bytes:
-    """
-    Placeholder function for image processing (scaling, normalization, etc.).
-    """
-    # For this implementation follow-up, we preserve the byte structure
-    return img_bytes 
+        if np.all(pixels == 0) or pixels.size == 0:
+            return False, b"", "Corrupted image"
+            
+        # 5: Standardization (apply rescale factors)
+        slope = getattr(dicom_file, 'RescaleSlope', 1.0)
+        intercept = getattr(dicom_file, 'RescaleIntercept', 0.0)
+        pixels = pixels * slope + intercept
+        
+        # 6: Format normalization (Min-Max scaling to 0-255 for DL models
+        p_min = np.min(pixels)
+        p_max = np.max(pixels)
+        
+        # Avoid division by zero on blank images
+        if p_max > p_min:
+            pixels = (pixels - p_min) / (p_max - p_min)
+        else:
+            pixels = np.zeros_like(pixels)
+            
+        pixels = (pixels * 255).astype(np.uint8)
+        
+        # Convert to PNG byte stream
+        image = Image.fromarray(pixels)
+        if len(pixels.shape) == 3:
+            image = image.convert('RGB')
+        else:
+            image = image.convert('L') # Grayscale
+            
+        png_buffer = io.BytesIO()
+        image.save(png_buffer, format="PNG")
+        
+        return True, png_buffer.getvalue(), "Success"
+        
+    except InvalidDicomError:
+        return False, b"", "Invalid DICOM format or corrupted file preamble"
+    except Exception as e:
+        return False, b"", f"Unexpected processing error: {str(e)}"
 
 def run_unstructured_trusted_pipeline():
     logger.info("Initializing unstructured path pipeline: Landing -> Trusted (MinIO)")
@@ -59,6 +97,8 @@ def run_unstructured_trusted_pipeline():
     pages = paginator.paginate(Bucket=landing_bucket, Prefix=dcim_root)
 
     loaded_files = 0
+    dropped_files = 0
+
     for page in pages:
         if "Contents" not in page:
             continue
@@ -72,13 +112,13 @@ def run_unstructured_trusted_pipeline():
             s3_obj = s3_client.get_object(Bucket=landing_bucket, Key=source_key)
             raw_bytes = s3_obj["Body"].read()
 
-            # Transform: data corruption verification
-            if not validate_dicom_integrity(raw_bytes):
-                logger.error(f"Corruption detected for file: {source_key}. Skipping loading.")
-                continue
+            # Transform: Exhaustive Data Quality Verification & Conversion
+            is_valid, processed_bytes, status_msg = process_and_validate_dicom(raw_bytes)
 
-            # Process the image data to standardize format
-            processed_bytes = convert_dicom_to_png_placeholder(raw_bytes)
+            if not is_valid:
+                logger.warning(f"DQ Failed for {source_key}: {status_msg}. File dropped.")
+                dropped_files += 1
+                continue
 
             # Load: Load clean, verified image into Trusted Zone
             target_key = source_key.replace(".dcm", ".png")
@@ -90,7 +130,7 @@ def run_unstructured_trusted_pipeline():
             loaded_files += 1
             logger.debug(f"Successfully processed and loaded image into Trusted: {trusted_bucket}/{target_key}")
     
-    logger.info(f"Unstructured processing complete. Verified and loaded {loaded_files} image files into Trusted Zone.")
+    logger.info(f"Unstructured processing complete. Verified/Loaded: {loaded_files} | Dropped: {dropped_files}.")
 
 if __name__ == "__main__":
     run_unstructured_trusted_pipeline()
