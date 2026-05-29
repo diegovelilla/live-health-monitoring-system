@@ -1,7 +1,7 @@
-import json
 import logging
-import boto3
 from pymongo import MongoClient
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lower, coalesce, lit
 from src.utils import require_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -39,7 +39,7 @@ def normalize_patient_document(raw_doc: dict) -> dict:
     return normalized_doc
 
 def run_semistructured_trusted_pipeline():
-    logger.info("Initializing semi-structured path pipeline: Landing -> Trusted (MongoDB)")
+    logger.info("Initializing Spark semi-structured path pipeline: Landing -> Trusted (MongoDB)")
 
     # Environment setup
     endpoint = require_env("MINIO_ENDPOINT")
@@ -54,57 +54,70 @@ def run_semistructured_trusted_pipeline():
     mongo_pwd = require_env("MONGO_PWD")
     mongo_db_name = require_env("MONGO_DB_NAME")
 
-    # Initialize boto3 client connection
-    s3_client = boto3.client(
-        "s3", endpoint_url=endpoint, aws_access_key_id=user, aws_secret_access_key=pwd
-    )
+    # Initialize Spark
+    spark = SparkSession.builder.appName("TrustedZoneSemiStructured") \
+        .config("spark.hadoop.fs.s3a.endpoint", endpoint) \
+        .config("spark.hadoop.fs.s3a.access.key", user) \
+        .config("spark.hadoop.fs.s3a.secret.key", pwd) \
+        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false") \
+        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
+        .getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
 
-    # Initialize MongoDB connection engine
+    # Extract: Read all JSON files in the FHIR sub-bucket simultaneously
+    s3_path = f"s3a://{landing_bucket}/{prefix_path}*.json"
+    logger.info(f"Reading JSONs using Spark from: {s3_path}")
+    
+    try:
+        df_fhir = spark.read.json(s3_path)
+    except Exception as e:
+        logger.error(f"Failed to read JSON files: {e}")
+        return
+
+    if df_fhir.isEmpty():
+        logger.warning("No FHIR JSONs found in the Landing Zone.")
+        return 
+    
+    # Transform: Standardize JSON fields via Spark
+    # - Convert relevant fields to lowercase
+    # - Insert default values if missing
+    logger.info("Applying data quality to JSON schemas...")
+
+    # Check if expected columns exist before transforming
+    cols = df_fhir.columns
+    if "gender" in cols:
+        df_fhir = df_fhir.withColumn("gender", lower(col("gender")))
+        df_fhir = df_fhir.withColumn("gender", coalesce(col("gender"), lit("unknown")))
+
+    # Convert Spark df to dicts for MongoDB insertion
+    logger.info("Converting Spark Dataframe to dicts for MongoDB insertion...")
+    patient_records = [row.asDict(recursive=True) for row in df_fhir.collect()]
+    if not patient_records:
+        return
+    
+    # MongoDB connection
+    logger.info(f"Connecting to MongoDB to insert {len(patient_records)} documents...")
     mongo_path = f"mongodb://{mongo_user}:{mongo_pwd}@{mongo_host}:{mongo_port}/"
-    logger.info(f"Connecting to MongoDB node instance at: {mongo_host}:{mongo_port}")
-    mongo_client = MongoClient(mongo_path)
-    db = mongo_client[mongo_db_name]
+    client = MongoClient(mongo_path)
+    db = client[mongo_db_name]
     collection = db["clinical_histories"]
-
+    
     # Create index for PK
     collection.create_index("patient_id", unique=True)
 
-    # Extract MinIO objects located in the Landing Zone
-    logger.info(f"Listing semi-structured data inside bucket: {landing_bucket}/{prefix_path}")
-    response = s3_client.list_objects_v2(Bucket=landing_bucket, Prefix=prefix_path)
-    
-    if "Contents" not in response:
-        logger.warning("No semi-structured JSON objects found in Landing Zone.")
-        return
-
-    processed_count = 0
-    for obj in response["Contents"]:
-        key = obj["Key"]
-        if not key.endswith(".json"):
-            continue
-
-        # Fetch individual JSON file
-        s3_object = s3_client.get_object(Bucket=landing_bucket, Key=key)
-        raw_content = s3_object["Body"].read().decode("utf-8")
-        
+    # Load: Insert ignoring duplicate keys
+    inserted = 0
+    for record in patient_records:
         try:
-            patient_data = json.loads(raw_content)
-        except json.JSONDecodeError as err:
-            logger.error(f"Skipping corrupt raw JSON file {key}: {err}")
-            continue
-        
-        # Transform: apply schema rules
-        clean_record = normalize_patient_document(patient_data)
+            # Upsert logic based on FHIR patient id
+            if "id" in record:
+                collection.replace_one({"id": record["id"]}, record, upsert=True)
+                inserted += 1
+        except Exception as e:
+            logger.warning(f"Failed to insert record {record.get('id', 'Unknown')}: {e}")
 
-        # Load: Insertion into MongoDB
-        collection.update_one(
-            {"patient_id": clean_record["patient_id"]},
-            {"$set": clean_record},
-            upsert=True
-        )
-        processed_count += 1
-
-    logger.info(f"Successfully normalized and inserted {processed_count} semi-structured JSON files inside collection: clinical_histories.")
-
+    logger.info(f"Successfully processed and inserted {inserted} patient records to MongoDB.")
 if __name__ == "__main__":
     run_semistructured_trusted_pipeline()

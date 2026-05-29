@@ -1,63 +1,35 @@
 import logging
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from delta import configure_spark_with_delta_pip
 import clickhouse_connect
-import pandas as pd
-import numpy as np
-from deltalake import DeltaTable
 from src.utils import require_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
 
-def apply_generic_data_quality_rules(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Applies Trusted Zone generic data quality rules and business logic.
-    Focuses on correcting representational issues and hardware sensor errors.
-    """
-    initial_count = len(df)
-    logger.info(f"Starting data quality processing on {initial_count} records...")
-    
-    # 1: Type validation and standardization
-    datetime_cols = ["window_start", "window_end", "aggregated_at"]
-    for col in datetime_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce', utc=True)
-    
-    # 2: Completeness check (drop if critical ids are missing)
-    df = df.dropna(subset=["device_id", "window_start"])
+def get_spark_session(endpoint, access_key, secret_key):
+    """Initializes Spark session with Delta and MinIO configurations."""
+    builder = SparkSession.builder.appName("TrustedZoneStructured") \
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
+        .config("spark.hadoop.fs.s3a.endpoint", endpoint) \
+        .config("spark.hadoop.fs.s3a.access.key", access_key) \
+        .config("spark.hadoop.fs.s3a.secret.key", secret_key) \
+        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
 
-    # 3: Deduplication (Keep most recent aggregations)
-    df = df.sort_values("aggregated_at").drop_duplicates(
-        subset=["device_id", "window_start"], keep="last"
-    )
-
-    # 4: Business rule: HW sensor check
-    # Remove impossible physiological values caused by sensor errors
-    df = df[
-        (df["avg_heart_rate_bpm"].between(30, 250)) &
-        (df["min_spo2_pct"].between(50, 100)) &
-        (df["avg_skin_temperature_c"].between(25, 45)) &
-        (df["avg_steps_last_minute"] >= 0) &
-        (df["avg_bp_sys"].between(70, 220)) &
-        (df["avg_bp_dia"].between(40, 130)) &
-        (df["avg_bp_sys"] > df["avg_bp_dia"]) 
+    # Packages for Delta and S3 communication
+    extra_packages = [
+        "org.apache.hadoop:hadoop-aws:3.3.4",
+        "com.amazonaws:aws-java-sdk-bundle:1.12.262"
     ]
-
-    # 5: Schema alignment for ClickHouse --> drop NAs or INFs
-    numeric_cols = [
-        "count_events", "avg_heart_rate_bpm", "min_spo2_pct", 
-        "avg_skin_temperature_c", "avg_steps_last_minute", 
-        "avg_bp_sys", "avg_bp_dia"
-    ]
-    df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=numeric_cols)
-
-    final_count = len(df)
-    logger.info(f"Data quality processing complete. Records passed: {final_count} (Dropped: {initial_count - final_count})")
-    
-    return df
+    builder = builder.config("spark.jars.packages", ",".join(extra_packages))
+    return configure_spark_with_delta_pip(builder).getOrCreate()
 
 def run_structured_trusted_pipeline():
-    logger.info("Initializing structured path pipeline: Landing -> Trusted (ClickHouse)")
+    logger.info("Initializing Spark structured path pipeline: Landing -> Trusted (ClickHouse)")
 
     # Environment setup
     endpoint = require_env("MINIO_ENDPOINT")
@@ -72,42 +44,49 @@ def run_structured_trusted_pipeline():
     ch_pass = require_env("CLICKHOUSE_PASSWORD")
     ch_db = require_env("CLICKHOUSE_TRUSTED_DB")
 
-    storage_options = {
-        "endpoint_url": endpoint,
-        "access_key_id": user,
-        "secret_access_key": pwd,
-        "region": "us-east-1",
-        "allow_http": "true",
-        "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
-    }
+    # Spark session
+    spark = get_spark_session(endpoint, user, pwd)
+    spark.sparkContext.setLogLevel("ERROR")
 
-    # Extract tabular aggregates from Delta Lake
-    delta_path = f"s3://{bucket}/{table_path}"
-    logger.info(f"Extracting Delta Lake table from: {delta_path}")
+    # Read Delta table into PySpark
+    delta_path = f"s3a://{bucket}/{table_path}"
+    logger.info(f"Extracting Delta Lake table using PySpark from: {delta_path}")
+
     try:
-        dt = DeltaTable(delta_path, storage_options=storage_options)
-        df = dt.to_pandas()
-        logger.info(f"Extracted {len(df)} aggregation rows from Landing Zone.")
+        df_spark = spark.read.format("delta").load(delta_path)
     except Exception as e:
-        logger.error(f"Failed to access Delta Lake table: {e}")
+        logger.error(f"Failed to access Delta table: {e}")
         return
     
-    if df.empty:
-        logger.warning("Landing Zone wearable table is currently empty. Execution stopped.")
+    if df_spark.isEmpty():
+        logger.warning("Landing Zone wearable table is currently empty.")
         return
     
-    # Generic data quality processing
-    df = apply_generic_data_quality_rules(df)
-
-    if df.empty:
-        logger.warning("All records were dropped during data quality checks. Execution stopped.")
+    # Data quality rules
+    logger.info("Applying data quality business rules via Spark...")
+    initial_count = df_spark.count()
+    df_clean = df_spark.dropna(subset=["device_id", "window_start"]) \
+        .dropDuplicates(["device_id", "window_start"]) \
+        .filter(
+            (col("avg_heart_rate_bpm").between(30, 250)) &
+            (col("min_spo2_pct").between(50, 100)) &
+            (col("avg_skin_temperature_c").between(25, 45)) &
+            (col("avg_steps_last_minute") >= 0) &
+            (col("avg_bp_sys").between(70, 220)) &
+            (col("avg_bp_dia").between(40, 130)) &
+            (col("avg_bp_sys") > col("avg_bp_dia"))
+        )
+    
+    # Convert to Pandas for DB load
+    df_pandas = df_clean.toPandas()
+    final_count = len(df_pandas)
+    logger.info(f"Spark data quality complete. Passed: {final_count} (Dropped: {initial_count - final_count})")
+    if df_pandas.empty:
         return
-
-    # Establish connection with ClickHouse Data Mart
-    logger.info(f"Establishing connection with ClickHouse at client path: {ch_host}:{ch_port}")
+    
+    # ClickHouse load
+    logger.info("Writing results to ClickHouse...")
     ch_client = clickhouse_connect.get_client(host=ch_host, port=ch_port, user=ch_user, password=ch_pass)
-
-    # Initialize ClickHouse DB
     ch_client.command(f"CREATE DATABASE IF NOT EXISTS {ch_db}")
 
     # Create table for wereable aggregates in ClickHouse DB 
@@ -130,12 +109,8 @@ def run_structured_trusted_pipeline():
     ORDER BY (device_id, window_start);
     """
     ch_client.command(create_table_query)
-    logger.info(f"Wereable aggregations table created/validated: {ch_db}.wearable_aggregates")
-
-    # Load wereable aggregates data into ClickHouse
-    logger.info(f"Loading {len(df)} processed records to ClickHouse...")
-    ch_client.insert_df(f"{ch_db}.wearable_aggregates", df)
-    logger.info("Structured Trusted Zone pipeline executed successfully.")
+    ch_client.insert_df(f"{ch_db}.wearable_aggregates", df_pandas)
+    logger.info("Spark Structured Trusted Zone pipeline complete.")
 
 if __name__ == '__main__':
     run_structured_trusted_pipeline()
