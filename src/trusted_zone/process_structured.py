@@ -1,11 +1,60 @@
 import logging
 import clickhouse_connect
 import pandas as pd
+import numpy as np
 from deltalake import DeltaTable
 from src.utils import require_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
+
+def apply_generic_data_quality_rules(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Applies Trusted Zone generic data quality rules and business logic.
+    Focuses on correcting representational issues and hardware sensor errors.
+    """
+    initial_count = len(df)
+    logger.info(f"Starting data quality processing on {initial_count} records...")
+    
+    # 1: Type validation and standardization
+    datetime_cols = ["window_start", "window_end", "aggregated_at"]
+    for col in datetime_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce', utc=True)
+    
+    # 2: Completeness check (drop if critical ids are missing)
+    df = df.dropna(subset=["device_id", "window_start"])
+
+    # 3: Deduplication (Keep most recent aggregations)
+    df = df.sort_values("aggregated_at").drop_duplicates(
+        subset=["device_id", "window_start"], keep="last"
+    )
+
+    # 4: Business rule: HW sensor check
+    # Remove impossible physiological values caused by sensor errors
+    df = df[
+        (df["avg_heart_rate_bpm"].between(30, 250)) &
+        (df["min_spo2_pct"].between(50, 100)) &
+        (df["avg_skin_temperature_c"].between(25, 45)) &
+        (df["avg_steps_last_minute"] >= 0) &
+        (df["avg_bp_sys"].between(70, 220)) &
+        (df["avg_bp_dia"].between(40, 130)) &
+        (df["avg_bp_sys"] > df["avg_bp_dia"]) 
+    ]
+
+    # 5: Schema alignment for ClickHouse --> drop NAs or INFs
+    numeric_cols = [
+        "count_events", "avg_heart_rate_bpm", "min_spo2_pct", 
+        "avg_skin_temperature_c", "avg_steps_last_minute", 
+        "avg_bp_sys", "avg_bp_dia"
+    ]
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=numeric_cols)
+
+    final_count = len(df)
+    logger.info(f"Data quality processing complete. Records passed: {final_count} (Dropped: {initial_count - final_count})")
+    
+    return df
 
 def run_structured_trusted_pipeline():
     logger.info("Initializing structured path pipeline: Landing -> Trusted (ClickHouse)")
@@ -48,20 +97,11 @@ def run_structured_trusted_pipeline():
         return
     
     # Generic data quality processing
-    logger.info("Generic data quality processing (deduplication and null checks)...")
+    df = apply_generic_data_quality_rules(df)
 
-    datetime_cols = ["window_start", "window_end", "aggregated_at"]
-    for col in datetime_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce', utc=True)
-
-    # Check 1: Drop entries missing important identifier keys
-    initial_count = len(df)
-    df = df.dropna(subset=["device_id", "window_start"])
-
-    # Check 2: Duplicate removal
-    df = df.drop_duplicates(subset=["device_id", "window_start"], keep="last")
-    logger.info(f"Quality checks complete. Dropped: {initial_count - len(df)}")
+    if df.empty:
+        logger.warning("All records were dropped during data quality checks. Execution stopped.")
+        return
 
     # Establish connection with ClickHouse Data Mart
     logger.info(f"Establishing connection with ClickHouse at client path: {ch_host}:{ch_port}")
