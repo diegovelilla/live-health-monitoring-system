@@ -255,3 +255,21 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - PYTHONUNBUFFERED=1
     command: python -m src.consumption_zone.alert_consumer
+  
+  streamlit-dashboard:
+    build:
+      context: .
+      dockerfile: docker/pipeline/Dockerfile
+    env_file:
+      - .env
+    container_name: bdm_streamlit_dashboard
+    restart: always
+    depends_on:
+      - clickhouse
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./src:/app/src
+    environment:
+      - PYTHONPATH=/app
+    command: streamlit run src/consumption_zone/dashboard.py --server.port=8501 --server.address=0.0.0.0

@@ -67,11 +67,12 @@ def run_semistructured_trusted_pipeline():
     spark.sparkContext.setLogLevel("ERROR")
 
     # Extract: Read all JSON files in the FHIR sub-bucket simultaneously
-    s3_path = f"s3a://{landing_bucket}/{prefix_path}*.json"
+    s3_path = f"s3a://{landing_bucket}/{prefix_path.rstrip('/')}/"
     logger.info(f"Reading JSONs using Spark from: {s3_path}")
     
     try:
-        df_fhir = spark.read.json(s3_path)
+        # Use recursiveFileLookup if your files are in subfolders
+        df_fhir = spark.read.option("recursiveFileLookup", "true").json(s3_path)
     except Exception as e:
         logger.error(f"Failed to read JSON files: {e}")
         return

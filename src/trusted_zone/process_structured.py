@@ -1,8 +1,9 @@
 import logging
+import clickhouse_connect
+import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 from delta import configure_spark_with_delta_pip
-import clickhouse_connect
 from src.utils import require_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -25,8 +26,7 @@ def get_spark_session(endpoint, access_key, secret_key):
         "org.apache.hadoop:hadoop-aws:3.3.4",
         "com.amazonaws:aws-java-sdk-bundle:1.12.262"
     ]
-    builder = builder.config("spark.jars.packages", ",".join(extra_packages))
-    return configure_spark_with_delta_pip(builder).getOrCreate()
+    return configure_spark_with_delta_pip(builder, extra_packages=extra_packages).getOrCreate()
 
 def run_structured_trusted_pipeline():
     logger.info("Initializing Spark structured path pipeline: Landing -> Trusted (ClickHouse)")
@@ -83,6 +83,11 @@ def run_structured_trusted_pipeline():
     logger.info(f"Spark data quality complete. Passed: {final_count} (Dropped: {initial_count - final_count})")
     if df_pandas.empty:
         return
+    
+    time_columns = ["window_start", "window_end", "aggregated_at"]
+    for col_name in time_columns:
+        if col_name in df_pandas.columns:
+            df_pandas[col_name] = pd.to_datetime(df_pandas[col_name])
     
     # ClickHouse load
     logger.info("Writing results to ClickHouse...")

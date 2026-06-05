@@ -17,3 +17,5 @@ transformers==4.38.2
 pymilvus==2.4.3
 deltalake==0.16.0
 clickhouse-connect==0.7.0
+streamlit==1.32.0
+plotly==5.19.0

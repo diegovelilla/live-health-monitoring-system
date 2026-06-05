@@ -27,6 +27,11 @@
     - Password: `mongo123456`
 5. **Milvus (Vector DB)**: `http://localhost:8000`
 
+6. **Dashboard (Patient UI)**: `http://localhost:8501/`
+
+7. **Wearable & Weather Alerts**: `docker logs -f bdm_alert_consumer`
+
+
 ## Execution
 
 The warm path aggregations will happen automatically so check MinIO. 
@@ -43,11 +48,6 @@ Then, Landing Zone data will be cleaned and normalized, and automatically loaded
 - **Unstructured binary DICOM files (TCIA)** will be processed for integrity checks and be stored in the `trusted-zone` bucket of **MinIO**.
 
 After some time (TCIA ingestion can take up to 5 min) you will see two new folders pop up in MinIO with the new data. 
-
-To check Wearable and Weather ALERTS:
-- `docker logs -f bdm_alert_consumer`
-
-Then you will be able to see the logs with all the data that they are producing.
 
 
 ## Stop The Project
