@@ -97,8 +97,9 @@ class WearableStreamProducer:
 
     def build_reading(self, device_id: str, device: dict[str, float]) -> dict[str, Any]:
         """
-        Build a synthetic reading for a given device, adding some random noise to the base values.
-        
+        Build a synthetic reading, injecting random anomalies 2% of the time 
+        to trigger downstream consumption alerts.
+
         Args:
             device_id (str): The unique identifier of the device.
             device (dict[str, float]): A dictionary containing the base values for the device's sensors.
@@ -106,15 +107,39 @@ class WearableStreamProducer:
         Returns:
             dict[str, Any]: A dictionary containing the synthetic reading for the device.
         """
+
+        # Baseline readings with normal noise
+        hr = int(self.add_noise(device["hr"], 5))
+        spo2 = round(min(100.0, self.add_noise(device["spo2"], 0.8)), 1)
+        bp_sys = int(self.add_noise(device["bp_sys"], 8))
+        bp_dia = int(self.add_noise(device["bp_dia"], 5))
+
+        # Anomaly injection (2% probability)
+        if random.random() < 0.02:
+            anomaly_type = random.choice(["tachycardia", "hypoxia", "hypertension"])
+            
+            if anomaly_type == "tachycardia":
+                hr += random.randint(50, 80) # Massive spike in HR
+                logger.warning(f"!! Injected anomaly: Tachycardia for {device_id} (HR: {hr})")
+            
+            elif anomaly_type == "hypoxia":
+                spo2 -= random.uniform(10.0, 20.0) # Massive drop in oxygen
+                logger.warning(f"!! Injected anomaly: Hypoxia for {device_id} (SpO2: {spo2})")
+                
+            elif anomaly_type == "hypertension":
+                bp_sys += random.randint(40, 60)
+                bp_dia += random.randint(20, 40)
+                logger.warning(f"!! Injected anomaly: Hypertension for {device_id} (BP: {bp_sys}/{bp_dia})")
+
         return {
             "device_id": device_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "heart_rate_bpm": int(self.add_noise(device["hr"], 5)),
-            "spo2_pct": round(min(100.0, self.add_noise(device["spo2"], 0.8)), 1),
+            "heart_rate_bpm": hr,
+            "spo2_pct": spo2,
             "steps_last_minute": max(0, int(self.add_noise(20, 20))),
             "skin_temperature_c": self.add_noise(device["temp"], 0.3),
-            "blood_pressure_systolic": int(self.add_noise(device["bp_sys"], 8)),
-            "blood_pressure_diastolic": int(self.add_noise(device["bp_dia"], 5)),
+            "blood_pressure_systolic": bp_sys,
+            "blood_pressure_diastolic": bp_dia
         }
 
     def build_event(self, reading: dict[str, Any]) -> dict[str, Any]:
