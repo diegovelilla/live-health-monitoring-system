@@ -114,16 +114,16 @@ class WearableStreamProducer:
         bp_sys = int(self.add_noise(device["bp_sys"], 8))
         bp_dia = int(self.add_noise(device["bp_dia"], 5))
 
-        # Anomaly injection (2% probability)
-        if random.random() < 0.02:
+        # Anomaly injection (5% probability)
+        if random.random() < 0.05:
             anomaly_type = random.choice(["tachycardia", "hypoxia", "hypertension"])
             
             if anomaly_type == "tachycardia":
-                hr += random.randint(50, 80) # Massive spike in HR
+                hr += random.randint(50, 80)
                 logger.warning(f"!! Injected anomaly: Tachycardia for {device_id} (HR: {hr})")
             
             elif anomaly_type == "hypoxia":
-                spo2 -= random.uniform(10.0, 20.0) # Massive drop in oxygen
+                spo2 -= random.uniform(10.0, 20.0)
                 logger.warning(f"!! Injected anomaly: Hypoxia for {device_id} (SpO2: {spo2})")
                 
             elif anomaly_type == "hypertension":

@@ -44,10 +44,8 @@ Then, Landing Zone data will be cleaned and normalized, and automatically loaded
 
 After some time (TCIA ingestion can take up to 5 min) you will see two new folders pop up in MinIO with the new data. 
 
-Since both hot paths are not being stored, the only way to check they work is by reading the logs of the producer processes. You can do so by running:
-
-- `docker compose logs -f wearable-api`
-- `docker compose logs -f weather-proxy`
+To check Wearable and Weather ALERTS:
+- `docker logs -f bdm_alert_consumer`
 
 Then you will be able to see the logs with all the data that they are producing.
 

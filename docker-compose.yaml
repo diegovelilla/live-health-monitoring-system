@@ -236,3 +236,22 @@ services:
     # We need to change the user and password to the ones above to be able to login to the Airflow UI.
     command: >
       bash -lc 'printf "{\"%s\":\"%s\"}\n" "$$AIRFLOW_SIMPLE_AUTH_USERNAME" "$$AIRFLOW_SIMPLE_AUTH_PASSWORD" > "$$AIRFLOW_HOME/simple_auth_manager_passwords.json" && airflow standalone'
+
+  alert-consumer:
+    build:
+      context: .
+      dockerfile: docker/pipeline/Dockerfile
+    env_file:
+      - .env
+    container_name: bdm_alert_consumer
+    restart: always
+    depends_on:
+      - kafka
+      - clickhouse
+    volumes:
+      - ./src:/app/src
+    environment:
+      - PYTHONPATH=/app
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - PYTHONUNBUFFERED=1
+    command: python -m src.consumption_zone.alert_consumer

@@ -2,7 +2,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from clients.wearable_client import WearableStreamConsumer
+from src.clients.wearable_client import WearableStreamConsumer
 from src.landing_zone.minio_manager import MinIOManager
 from src.utils import require_env
 

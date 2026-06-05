@@ -5,8 +5,8 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 
-from clients.fhir_client import get_patients
-from clients.tcia_client import download_dicom_series, get_balanced_metadata
+from src.clients.fhir_client import get_patients
+from src.clients.tcia_client import download_dicom_series, get_balanced_metadata
 from src.landing_zone.minio_manager import MinIOManager
 from src.utils import require_env
 
