@@ -75,6 +75,6 @@ docker compose down
 ```
 2. (Optional reset) Stop and remove volumes:
 ```bash
-    docker compose down -v
-    rm -rf ./data/
+docker compose down -v
+rm -rf ./data/
 ```

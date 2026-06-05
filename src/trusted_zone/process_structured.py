@@ -2,7 +2,7 @@ import logging
 import clickhouse_connect
 import pandas as pd
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, lit, current_timestamp
 from delta import configure_spark_with_delta_pip
 from src.utils import require_env
 
@@ -62,8 +62,8 @@ def run_structured_trusted_pipeline():
         logger.warning("Landing Zone wearable table is currently empty.")
         return
     
-    # Data quality rules
-    logger.info("Applying data quality business rules via Spark...")
+    # Data quality rules & metadata
+    logger.info("Applying data quality business rules and adding metadata via Spark...")
     initial_count = df_spark.count()
     df_clean = df_spark.dropna(subset=["device_id", "window_start"]) \
         .dropDuplicates(["device_id", "window_start"]) \
@@ -75,7 +75,9 @@ def run_structured_trusted_pipeline():
             (col("avg_bp_sys").between(70, 220)) &
             (col("avg_bp_dia").between(40, 130)) &
             (col("avg_bp_sys") > col("avg_bp_dia"))
-        )
+        ) \
+        .withColumn("audit_ingested_at", current_timestamp()) \
+        .withColumn("audit_source_path", lit(delta_path))
     
     # Convert to Pandas for DB load
     df_pandas = df_clean.toPandas()
@@ -108,7 +110,9 @@ def run_structured_trusted_pipeline():
         avg_steps_last_minute Float32,
         avg_bp_sys Float32,
         avg_bp_dia Float32,
-        aggregated_at DateTime64(3, 'UTC')
+        aggregated_at DateTime64(3, 'UTC'),
+        audit_ingested_at DateTime64(3, 'UTC'),
+        audit_source_path String
     ) ENGINE = ReplacingMergeTree(aggregated_at)
     PRIMARY KEY (device_id, window_start)
     ORDER BY (device_id, window_start);

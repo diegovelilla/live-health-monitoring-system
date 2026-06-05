@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from airflow.sdk import dag, task
 
@@ -58,6 +59,7 @@ def cold_ingestion():
             dcim_root_path=require_env("TCIA_DCIM_PATH"),
             metadata_delta_table=require_env("TCIA_METADATA_DELTA"),
         )
+        return {"status": 1}
     
 
     ############################################
@@ -77,7 +79,8 @@ def cold_ingestion():
     @task()
     def trusted_unstructured_task(upstream_tcia_status: dict[str, int]) -> None:
         """Validates and processes raw DICOM images into Trusted MinIO bucket"""
-        run_unstructured_trusted_pipeline() 
+        os.environ["AWS_S3_ALLOW_UNSAFE_RENAME"] = "true"
+        run_unstructured_trusted_pipeline()
 
     
     ############################################
@@ -97,6 +100,7 @@ def cold_ingestion():
     @task()
     def exploitation_unstructured_task() -> None:
         """Generates image embeddings (Milvus) and moves images to Exploitation MinIO bucket"""
+        os.environ["AWS_S3_ALLOW_UNSAFE_RENAME"] = "true"
         run_unstructured_exploitation_pipeline()
     
 

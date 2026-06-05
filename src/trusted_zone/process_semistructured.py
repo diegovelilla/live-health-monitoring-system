@@ -1,7 +1,8 @@
 import logging
+from datetime import datetime, timezone
 from pymongo import MongoClient
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lower, coalesce, lit
+from pyspark.sql.functions import col, lower, coalesce, lit, input_file_name
 from src.utils import require_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -34,6 +35,10 @@ def normalize_patient_document(raw_doc: dict) -> dict:
         "metadata_provenance": {
             "resource_type": str(raw_doc.get("resourceType", "Patient")),
             "landing_version_id": raw_doc.get("meta", {}).get("versionId", "1")
+        },
+        "_audit_metadata": {
+            "audit_source_path": raw_doc.get("audit_source_path", "unknown"),
+            "audit_processed_at": datetime.now(timezone.utc).isoformat()
         }
     }
     return normalized_doc
@@ -71,7 +76,6 @@ def run_semistructured_trusted_pipeline():
     logger.info(f"Reading JSONs using Spark from: {s3_path}")
     
     try:
-        # Use recursiveFileLookup if your files are in subfolders
         df_fhir = spark.read.option("recursiveFileLookup", "true").json(s3_path)
     except Exception as e:
         logger.error(f"Failed to read JSON files: {e}")
@@ -84,22 +88,25 @@ def run_semistructured_trusted_pipeline():
     # Transform: Standardize JSON fields via Spark
     # - Convert relevant fields to lowercase
     # - Insert default values if missing
-    logger.info("Applying data quality to JSON schemas...")
+    logger.info("Applying data quality to JSON schemas and appending metadata...")
 
     # Check if expected columns exist before transforming
     cols = df_fhir.columns
     if "gender" in cols:
         df_fhir = df_fhir.withColumn("gender", lower(col("gender")))
         df_fhir = df_fhir.withColumn("gender", coalesce(col("gender"), lit("unknown")))
+    
+    # Dynamically capture the exact S3 object path this row came from
+    df_fhir = df_fhir.withColumn("audit_source_path", input_file_name())
 
     # Convert Spark df to dicts for MongoDB insertion
     logger.info("Converting Spark Dataframe to dicts for MongoDB insertion...")
-    patient_records = [row.asDict(recursive=True) for row in df_fhir.collect()]
-    if not patient_records:
+    raw_records = [row.asDict(recursive=True) for row in df_fhir.collect()]
+    if not raw_records:
         return
     
     # MongoDB connection
-    logger.info(f"Connecting to MongoDB to insert {len(patient_records)} documents...")
+    logger.info(f"Connecting to MongoDB to insert {len(raw_records)} documents...")
     mongo_path = f"mongodb://{mongo_user}:{mongo_pwd}@{mongo_host}:{mongo_port}/"
     client = MongoClient(mongo_path)
     db = client[mongo_db_name]
@@ -110,15 +117,21 @@ def run_semistructured_trusted_pipeline():
 
     # Load: Insert ignoring duplicate keys
     inserted = 0
-    for record in patient_records:
+    for raw_record in raw_records:
         try:
-            # Upsert logic based on FHIR patient id
-            if "id" in record:
-                collection.replace_one({"id": record["id"]}, record, upsert=True)
-                inserted += 1
+            clean_record = normalize_patient_document(raw_record)
+
+            # Upsert using the standardized patient_id
+            collection.replace_one(
+                {"patient_id": clean_record["patient_id"]}, 
+                clean_record, 
+                upsert=True
+            )
+            inserted += 1
         except Exception as e:
-            logger.warning(f"Failed to insert record {record.get('id', 'Unknown')}: {e}")
+            logger.warning(f"Failed to insert record {raw_record.get('id', 'Unknown')}: {e}")
 
     logger.info(f"Successfully processed and inserted {inserted} patient records to MongoDB.")
+
 if __name__ == "__main__":
     run_semistructured_trusted_pipeline()

@@ -5,6 +5,7 @@ import pydicom
 import numpy as np
 from PIL import Image
 from pydicom.errors import InvalidDicomError
+from deltalake import DeltaTable, write_deltalake
 from src.utils import require_env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -79,6 +80,16 @@ def run_unstructured_trusted_pipeline():
     landing_bucket = require_env("LANDING_ZONE_BUCKET")
     trusted_bucket = require_env("TRUSTED_ZONE_BUCKET")
     dcim_root = require_env("TCIA_DCIM_PATH")
+    metadata_delta_path = require_env("TCIA_METADATA_DELTA")
+
+    # Delta Lake storage configuration for MinIO
+    storage_options = {
+        "endpoint_url": endpoint, 
+        "access_key_id": user, 
+        "secret_access_key": pwd, 
+        "region": "us-east-1", 
+        "allow_http": "true"
+    }
 
     s3_client = boto3.client(
         "s3", endpoint_url=endpoint, aws_access_key_id=user, aws_secret_access_key=pwd
@@ -91,6 +102,16 @@ def run_unstructured_trusted_pipeline():
         logger.info(f"Creating target bucket: {trusted_bucket}")
         s3_client.create_bucket(Bucket=trusted_bucket)
 
+    # Load Landing Zone Metadata
+    landing_delta_uri = f"s3://{landing_bucket}/{metadata_delta_path}"
+    logger.info(f"Extracting metadata from Landing Delta Lake: {landing_delta_uri}")
+    try:
+        dt = DeltaTable(landing_delta_uri, storage_options=storage_options)
+        df_metadata = dt.to_pandas()
+    except Exception as e:
+        logger.error(f"Failed to load Landing Delta metadata: {e}")
+        return
+
     # Scan images (.dcm files) in the Landing bucket path
     logger.info(f"Scanning for DICOM images under landing path: {landing_bucket}/{dcim_root}")
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -98,6 +119,7 @@ def run_unstructured_trusted_pipeline():
 
     loaded_files = 0
     dropped_files = 0
+    valid_original_filenames = [] # files that pass data quality check
 
     for page in pages:
         if "Contents" not in page:
@@ -127,9 +149,32 @@ def run_unstructured_trusted_pipeline():
                 Key=target_key,
                 Body=processed_bytes
             )
+
+            valid_original_filenames.append(source_key.split("/")[-1])
             loaded_files += 1
             logger.debug(f"Successfully processed and loaded image into Trusted: {trusted_bucket}/{target_key}")
     
+    # Transform and load Trusted Zone metadata
+    if not df_metadata.empty and valid_original_filenames:
+        logger.info("Cleaning and moving Delta metadata to Trusted Zone...")
+        
+        # Drop rows where the image failed the quality check
+        df_trusted = df_metadata[df_metadata["file_name"].isin(valid_original_filenames)].copy()
+        
+        # Update the file extensions to match the new Trusted Zone reality
+        if "file_name" in df_trusted.columns:
+            df_trusted["file_name"] = df_trusted["file_name"].str.replace(".dcm", ".png")
+            
+        # Write clean metadata to Trusted Zone
+        trusted_delta_uri = f"s3://{trusted_bucket}/{metadata_delta_path}"
+        write_deltalake(
+            trusted_delta_uri,
+            df_trusted,
+            storage_options=storage_options,
+            mode="overwrite"
+        )
+        logger.info(f"Trusted metadata written to {trusted_delta_uri}")
+
     logger.info(f"Unstructured processing complete. Verified/Loaded: {loaded_files} | Dropped: {dropped_files}.")
 
 if __name__ == "__main__":
