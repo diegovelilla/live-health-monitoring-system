@@ -1,58 +1,80 @@
 # Run Instructions
 
-> **MAKE SURE TO HAVE PLACED THE _.env_ INSIDE THE PROJECT ROOT FOLDER!**
+> **IMPORTANT:** Ensure you have placed the _.env_ file inside the project root folder before starting.
 
-## Start The Project
+## Start Project
 
-1. Build images + start sevices in the background:
-	- `docker compose up -d --build`
-2. (Optional) Verify containers are running:
-	- `docker compose ps`
+1. Build and start the services:
+```bash
+docker compose up -d --build
+```
+2. (Optional) Verify containers:
+```bash
+docker compose ps
+```
+> **Note**: Pulling Docker images during heavy network traffic may cause timeouts, please ensure a stable connection.
 
-> **Note that pulling Docker images from Docker Hub during _La Liga_ football games can result in timeout errors thanks to Javier Tebas' noble efforts to stop piracy.**
+## Service Access Points
+| Service | Access URL | Credentials |
+| :--- | :--- | :--- |
+| **Airflow UI** | `http://localhost:8080` | `airflow` / `airflow` |
+| **MinIO UI** | `http://localhost:9001` | `minio_admin` / `minio123456` |
+| **ClickHouse UI** | `http://localhost:8123/play` | `clickhouse_admin` / `clickhouse123456` |
+| **MongoDB UI** | `http://localhost:8081` | `mongo_admin` / `mongo123456` |
+| **Milvus UI** | `http://localhost:8000` | N/A |
+| **Patient Dashboard** | `http://localhost:8501` | N/A |
 
-## Access Services
+* **Real-time Alerts**: Monitor via `docker logs -f bdm_alert_consumer`.
 
-1. **Airflow UI**: `http://localhost:8080` (kinda slow start)
-    - User: `airflow`
-    - Password: `airflow`
-2. **MinIO Console**: `http://localhost:9001`
-    - Default user: `minio_admin`
-    - Default password: `minio123456`
-3. **ClickHouse Web Client (Play UI)**: `http://localhost:8123/play` (HTTP Interface)
-    - User: `clickhouse_admin`
-    - Password: `clickhouse123456`
-4. **MongoDB web interface**: `http://localhost:8081`
-    - User: `mongo_admin`
-    - Password: `mongo123456`
-5. **Milvus (Vector DB)**: `http://localhost:8000`
+## Data Pipeline Execution
 
-6. **Dashboard (Patient UI)**: `http://localhost:8501/`
+### 1. Hot Path (Streaming)
+The Hot Path runs automatically as a background service after starting the containers:
+* The ```wearable-api``` and ```weather-api``` continuously stream synthetic telemetry (heart rate, SpO2, blood pressure) and weather information into the Kafka broker.
+* The ```alert-consumer``` service runs a continuous loop, analyzing each incoming packet against patient-specific statistical profiles.
+* The consumer calculates a dynamic threshold on the patient's historical profile to alert immediately if a threshold is breached.
 
-7. **Wearable & Weather Alerts**: `docker logs -f bdm_alert_consumer`
+To mointor the alerts triggered by the Hot Path, run:
+```bash
+docker logs -f bdm_alert_consumer
+```
 
+### 2. Warm Path (Streaming)
+The Warm Path consists of the wearable aggregation service, which also operates continuously in the background:
+* It first polls Kafka topics (1-second).
+* Then, aggregates the 1-second raw telemmetry into 1-minute windows.
+* Finally, it persists these to the Landing Zone MinIO bucket.
 
-## Execution
+The wearable aggregations are stored in MinIO in: ```landing-zone/WEARABLE/DELTA```.
 
-The warm path aggregations will happen automatically so check MinIO. 
+### 3. Cold Path
+> **IMPORTANT**: In the first run, wait at least 2 minutes after starting the containers to leave time the wearable aggregator to store some aggregation record so that the Cold Path is effective (the ```process_structured``` sub-path uses the wearable aggregations).
 
-In order to run the cold paths, go the Airflow UI, and under `Dags`, you will find `cold_ingestion`. Go inside and trigger it. 
+To run the Cold Path:
+1. Navigate to the Airflow UI (```http://localhost:8080```).
+2. Locate the ```cold_ingestion``` DAG in the list.
+3. Click the **Trigger** button to run the full DAG.
 
-Once triggered, the orchestration engine will sequentially extract raw data into the **Landing Zone**:
-- **Semi-structured patient clinical records (FHIR)** and its corresponding DeltaLake metadata will be loaded into the Landing Zone MinIO bucket.
-- **Unstructured binary DICOM files (TCIA)** and its corresponding DeltaLake metadata will be loaded into the Landing Zone MinIO bucket.
-
-Then, Landing Zone data will be cleaned and normalized, and automatically loaded into **Trusted Zone** storages:
-- **Tabular wearable aggregates** will be streamed straight into the **ClickHouse Data Mart**.
-- **Semi-structured patient clinical records (FHIR)** will be parsed and loaded into the **MongoDB Document Store**.
-- **Unstructured binary DICOM files (TCIA)** will be processed for integrity checks and be stored in the `trusted-zone` bucket of **MinIO**.
-
-After some time (TCIA ingestion can take up to 5 min) you will see two new folders pop up in MinIO with the new data. 
-
+**Orchestration Workflow**:
+* **Landing Zone**
+    * **FHIR (Semi-structured)**: FHIR with patient records and its corresponding DeltaLake metadata will be loaded into the Landing Zone MinIO bucket.
+    * **TCIA images (Unstructured)**: Binary files of TCIA images and its corresponding DeltaLake metadata will be loaded into the Landing Zone MinIO bucket.
+* **Trusted Zone**
+    * **MinIO to ClickHouse (Structured)**: Wearable aggregates from MinIO are cleaned and loaded into the ```trusted_zone``` ClickHouse database.
+    * **MinIO to MongoDB (Semi-structured)**: FHIR clinical records from MinIO are parsed, normalized, and stored into MongoDB.
+    * **MinIO to MinIO (Unstructured)**: It is applied data quality processing to DICOM files (TCIA images) and moved to the ```trusted-zone``` MinIO bucket.
+* **Exploitation Zone**
+    * **ClickHouse to ClickHouse (Structured)**: Statistical profiles are built for each client based on the wearable aggregates stored in ClickHouse, and stored again in the Exploitation DB of ClickHouse to be used in the Dashboard.
+    * **MongoDB to ClickHouse (Semi-structured)**: FHIR clinical records stored in MongoDB are transformed into tabular data and stored in the Exploitation DB of ClickHouse to be used in the Dashboard.
+    * **MinIO to Milvus**: Binary TCIA images from MinIO are transformed into embeddings with CLIP encoder and stored in Milvus (Vector DB).
 
 ## Stop The Project
-
 1. Stop containers:
-	- `docker compose down`
-2. Stop and remove volumes (optional reset):
-	- `docker compose down -v`
+```bash
+docker compose down
+```
+2. (Optional reset) Stop and remove volumes:
+```bash
+    docker compose down -v
+    rm -rf ./data/
+```
