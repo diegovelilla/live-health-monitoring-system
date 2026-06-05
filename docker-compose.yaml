@@ -157,7 +157,7 @@ services:
       - WEARABLE_PUBLISH_INTERVAL_SEC=1
       - KAFKA_CLIENT_ID=wearable-producer
       - PYTHONUNBUFFERED=1
-    command: python -m src.landing_zone.producers.wearable_producer
+    command: python -m src.kafka_producers.wearable_producer
 
   weather-proxy:
     build:
@@ -178,7 +178,7 @@ services:
       - WEATHER_PUBLISH_INTERVAL_SEC=60
       - KAFKA_CLIENT_ID=weather-producer
       - PYTHONUNBUFFERED=1
-    command: python -m src.landing_zone.producers.weather_producer
+    command: python -m src.kafka_producers.weather_producer
 
   wearable-aggregator:
     build:
