@@ -34,7 +34,7 @@ The Hot Path runs automatically as a background service after starting the conta
 * The ```alert-consumer``` service runs a continuous loop, analyzing each incoming packet against patient-specific statistical profiles.
 * The consumer calculates a dynamic threshold on the patient's historical profile to alert immediately if a threshold is breached.
 
-To mointor the alerts triggered by the Hot Path, run:
+To mointor the alerts triggered by the Hot Path (both for the wearable & weather), run:
 ```bash
 docker logs -f bdm_alert_consumer
 ```
